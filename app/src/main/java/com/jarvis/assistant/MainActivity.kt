@@ -38,12 +38,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var statusText: TextView
     private var mediaPlayer: MediaPlayer? = null
     private var flashOn = false
+    private var continuousMode = false
     private val client = OkHttpClient()
 
     // ---- ضيف مفتاح Google Gemini الخاص فيك هون بين علامتي التنصيص ----
     // احصل عليه مجانًا من: https://aistudio.google.com/apikey
     // خليه فاضي "" إذا بدك تبقي جارفس أوفلاين بالكامل
-    private val GEMINI_API_KEY = "AQ.Ab8RN6KbrDfuyM3-2804zqWf_KrD3FJvK5jrqj20UG8R3tJNXwذ"
+    private val GEMINI_API_KEY = "AQ.Ab8RN6JAWNvpqDQDaeRnpIWYKL8-7q_ENOjLPB8iMt__-l5jPA"
 
     // ---- ضيف مفتاح Google Maps هون لمسافات حقيقية بالطريق ----
     // احصل عليه من: https://console.cloud.google.com/google/maps-apis
@@ -67,13 +68,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         requestNeededPermissions()
 
         findViewById<Button>(R.id.micButton).setOnClickListener {
-            startListening()
+            val button = it as Button
+            if (continuousMode) {
+                continuousMode = false
+                button.text = "اضغط وتكلم"
+                log("توقف وضع الاستماع المستمر")
+            } else {
+                continuousMode = true
+                button.text = "إيقاف الاستماع (جارفس شغال)"
+                log("قلي: جارفس ...")
+                startListening()
+            }
         }
     }
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts.language = Locale("ar")
+            tts.setPitch(0.8f)
+            val arabicVoices = tts.voices?.filter { it.locale.language == "ar" }
+            val maleVoice = arabicVoices?.firstOrNull {
+                it.name.contains("male", ignoreCase = true) &&
+                        !it.name.contains("female", ignoreCase = true)
+            }
+            if (maleVoice != null) {
+                tts.voice = maleVoice
+            }
         }
     }
 
@@ -106,6 +126,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try {
             startActivityForResult(intent, REQ_SPEECH)
         } catch (e: Exception) {
+            continuousMode = false
+            findViewById<Button>(R.id.micButton).text = "اضغط وتكلم"
             log("ما في تطبيق تعرف صوتي متاح على هالجهاز")
         }
     }
@@ -113,9 +135,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_SPEECH && data != null) {
-            val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            val spoken = results?.get(0) ?: return
+        if (requestCode != REQ_SPEECH) return
+
+        val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+        val spoken = results?.get(0)?.trim() ?: ""
+
+        if (continuousMode) {
+            if (spoken.startsWith("جارفس")) {
+                val commandOnly = spoken.removePrefix("جارفس").trim()
+                log("أنت: $commandOnly")
+                if (commandOnly.isNotBlank()) handleCommand(commandOnly)
+            }
+            if (continuousMode) startListening()
+        } else if (spoken.isNotBlank()) {
             log("أنت: $spoken")
             handleCommand(spoken)
         }
@@ -127,11 +159,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val cmd = text.lowercase(Locale("ar")).trim()
 
         when {
-            cmd.contains("شغل الفلاش") || cmd.contains("افتح الفلاش") -> {
+            cmd.contains("شغل الفلاش") || cmd.contains("افتح الفلاش") ||
+                    cmd.contains("شعل الفلاش") || cmd.contains("شعل فلاش") ||
+                    cmd.contains("شغل فلاش") -> {
                 setFlashlight(true)
                 respond("تم تشغيل الفلاش")
             }
-            cmd.contains("طفي الفلاش") || cmd.contains("اطفي الفلاش") -> {
+            cmd.contains("طفي الفلاش") || cmd.contains("اطفي الفلاش") ||
+                    cmd.contains("طفئ الفلاش") -> {
                 setFlashlight(false)
                 respond("تم إطفاء الفلاش")
             }
@@ -172,7 +207,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             cmd.contains("فطور") -> {
                 respond(suggestBreakfast())
             }
-            cmd.contains("المسافة من") || cmd.contains("كم المسافة") -> {
+            (cmd.contains("مسافة") || cmd.contains("مسافه")) &&
+                    (cmd.contains("الى") || cmd.contains("إلى")) -> {
                 handleDistanceQuery(cmd)
             }
             else -> {
@@ -311,10 +347,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             "application/json".toMediaTypeOrNull(),
             jsonBody.toString()
         )
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$GEMINI_API_KEY"
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
         val request = Request.Builder()
             .url(url)
             .addHeader("Content-Type", "application/json")
+            .addHeader("x-goog-api-key", GEMINI_API_KEY)
             .post(body)
             .build()
 
