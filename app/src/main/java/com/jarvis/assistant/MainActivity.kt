@@ -43,18 +43,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     // ---- ضيف مفتاح Google Gemini الخاص فيك هون بين علامتي التنصيص ----
     // احصل عليه مجانًا من: https://aistudio.google.com/apikey
     // خليه فاضي "" إذا بدك تبقي جارفس أوفلاين بالكامل
-    private val GEMINI_API_KEY = "AQ.Ab8RN6KbrDfuyM3-2804zqWf_KrD3FJvK5jrqj20UG8R3tJNXw' \
-  -d '{
-    "contents": [
-      {
-        "parts": [
-          {
-            "text": "Explain how AI works in a few words"
-          }
-        ]
-      }
-    ]
-  }'"
+    private val GEMINI_API_KEY = "AQ.Ab8RN6KbrDfuyM3-2804zqWf_KrD3FJvK5jrqj20UG8R3tJNXwذ"
 
     // ---- ضيف مفتاح Google Maps هون لمسافات حقيقية بالطريق ----
     // احصل عليه من: https://console.cloud.google.com/google/maps-apis
