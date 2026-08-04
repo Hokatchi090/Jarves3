@@ -14,7 +14,7 @@
     <application
         android:allowBackup="true"
         android:label="Jarvis"
-        android:theme="@style/Theme.AppCompat.DayNight">
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 
         <activity
             android:name=".MainActivity"
