@@ -43,12 +43,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     // ---- ضيف مفتاح Google Gemini الخاص فيك هون بين علامتي التنصيص ----
     // احصل عليه مجانًا من: https://aistudio.google.com/apikey
     // خليه فاضي "" إذا بدك تبقي جارفس أوفلاين بالكامل
-    private val GEMINI_API_KEY = ""
-
-    // ---- ضيف مفتاح Google Maps هون لمسافات حقيقية بالطريق ----
-    // احصل عليه من: https://console.cloud.google.com/google/maps-apis
-    // خليه فاضي "" إذا بدك يستخدم حساب تقريبي (خط مستقيم) بدون مفتاح
-    private val GOOGLE_MAPS_API_KEY = "curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent" \
+    private val GEMINI_API_KEY = "curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent" \
   -H 'Content-Type: application/json' \
   -H 'X-goog-api-key: AQ.Ab8RN6KbrDfuyM3-2804zqWf_KrD3FJvK5jrqj20UG8R3tJNXw' \
   -X POST \
@@ -63,6 +58,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
       }
     ]
   }'"
+
+    // ---- ضيف مفتاح Google Maps هون لمسافات حقيقية بالطريق ----
+    // احصل عليه من: https://console.cloud.google.com/google/maps-apis
+    // خليه فاضي "" إذا بدك يستخدم حساب تقريبي (خط مستقيم) بدون مفتاح
+    private val GOOGLE_MAPS_API_KEY = ""
 
     companion object {
         private const val REQ_SPEECH = 100
