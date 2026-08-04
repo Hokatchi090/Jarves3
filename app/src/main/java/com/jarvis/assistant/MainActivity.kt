@@ -11,6 +11,8 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
+import android.speech.RecognitionListener
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.widget.Button
 import android.widget.TextView
@@ -22,6 +24,10 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.io.IOException
 import java.util.*
 import android.provider.ContactsContract
+import android.provider.AlarmClock
+import android.app.SearchManager
+import android.os.BatteryManager
+import android.media.AudioManager
 import android.net.Uri
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -39,6 +45,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var mediaPlayer: MediaPlayer? = null
     private var flashOn = false
     private var continuousMode = false
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var currentLangCode = "ar"
     private val client = OkHttpClient()
 
     // ---- ضيف مفتاح Google Gemini الخاص فيك هون بين علامتي التنصيص ----
@@ -67,15 +75,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         requestNeededPermissions()
 
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        speechRecognizer?.setRecognitionListener(recognitionListener)
+
         findViewById<Button>(R.id.micButton).setOnClickListener {
             val button = it as Button
             if (continuousMode) {
                 continuousMode = false
-                button.text = "اضغط وتكلم"
+                button.text = "🎙️"
+                statusText.text = "جاهز للاستماع"
                 log("توقف وضع الاستماع المستمر")
             } else {
                 continuousMode = true
-                button.text = "إيقاف الاستماع (جارفس شغال)"
+                button.text = "⏹️"
+                statusText.text = "بسمعك... قول \"جارفس\""
                 log("قلي: جارفس ...")
                 startListening()
             }
@@ -85,11 +98,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts.language = Locale("ar")
-            tts.setPitch(0.8f)
+            tts.setPitch(0.7f)
+            tts.setSpeechRate(0.95f)
             val arabicVoices = tts.voices?.filter { it.locale.language == "ar" }
-            val maleVoice = arabicVoices?.firstOrNull {
-                it.name.contains("male", ignoreCase = true) &&
-                        !it.name.contains("female", ignoreCase = true)
+            val maleVoice = arabicVoices?.firstOrNull { voice ->
+                val n = voice.name.lowercase(Locale.ROOT)
+                (n.contains("male") && !n.contains("female")) ||
+                        n.contains("-d-") || n.contains("#male")
             }
             if (maleVoice != null) {
                 tts.voice = maleVoice
@@ -122,27 +137,50 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun startListening() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar")
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, currentLangCode)
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         try {
-            startActivityForResult(intent, REQ_SPEECH)
+            speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             continuousMode = false
-            findViewById<Button>(R.id.micButton).text = "اضغط وتكلم"
-            log("ما في تطبيق تعرف صوتي متاح على هالجهاز")
+            findViewById<Button>(R.id.micButton).text = "🎙️"
+            statusText.text = "جاهز للاستماع"
+            log("ما قدرت أبلش الاستماع")
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_SPEECH) return
+    private val recognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {}
 
-        val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-        val spoken = results?.get(0)?.trim() ?: ""
+        override fun onError(error: Int) {
+            // بيصير عادي وقت الصمت أو الضجيج، منعيد الاستماع إذا لسا بوضع مستمر
+            if (continuousMode) startListening()
+        }
 
+        override fun onResults(resultsBundle: Bundle?) {
+            val matches = resultsBundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            val spoken = matches?.firstOrNull()?.trim() ?: ""
+            handleSpeechResult(spoken)
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+    }
+
+    private fun handleSpeechResult(spoken: String) {
         if (continuousMode) {
-            if (spoken.startsWith("جارفس")) {
-                val commandOnly = spoken.removePrefix("جارفس").trim()
+            val lower = spoken.lowercase(Locale.getDefault())
+            val wakeIndex = when {
+                spoken.contains("جارفس") -> spoken.indexOf("جارفس").let { it + "جارفس".length }
+                lower.contains("jarvis") -> lower.indexOf("jarvis") + "jarvis".length
+                else -> -1
+            }
+            if (wakeIndex != -1) {
+                val commandOnly = spoken.substring(wakeIndex.coerceAtMost(spoken.length)).trim()
                 log("أنت: $commandOnly")
                 if (commandOnly.isNotBlank()) handleCommand(commandOnly)
             }
@@ -161,22 +199,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         when {
             cmd.contains("شغل الفلاش") || cmd.contains("افتح الفلاش") ||
                     cmd.contains("شعل الفلاش") || cmd.contains("شعل فلاش") ||
-                    cmd.contains("شغل فلاش") -> {
+                    cmd.contains("شغل فلاش") ||
+                    cmd.contains("turn on the flash") || cmd.contains("turn on flash") ||
+                    cmd.contains("allume la lampe") || cmd.contains("allume le flash") -> {
                 setFlashlight(true)
-                respond("تم تشغيل الفلاش")
+                respond(flashOnPhrases.random())
             }
             cmd.contains("طفي الفلاش") || cmd.contains("اطفي الفلاش") ||
-                    cmd.contains("طفئ الفلاش") -> {
+                    cmd.contains("طفئ الفلاش") ||
+                    cmd.contains("turn off the flash") || cmd.contains("turn off flash") ||
+                    cmd.contains("éteins la lampe") || cmd.contains("éteins le flash") -> {
                 setFlashlight(false)
-                respond("تم إطفاء الفلاش")
+                respond(flashOffPhrases.random())
             }
-            cmd.contains("شغل موسيقى") || cmd.contains("شغل الموسيقى") -> {
+            cmd.contains("غير اللغة") || cmd.contains("change language") || cmd.contains("changer la langue") -> {
+                handleLanguageSwitch(cmd)
+            }
+            cmd.contains("شغل موسيقى") || cmd.contains("شغل الموسيقى") ||
+                    cmd.contains("play music") || cmd.contains("joue de la musique") ||
+                    cmd.contains("lance la musique") -> {
                 playMusic()
-                respond("تشغيل الموسيقى")
+                respond(musicOnPhrases.random())
             }
-            cmd.contains("وقف الموسيقى") || cmd.contains("طفي الموسيقى") -> {
+            cmd.contains("وقف الموسيقى") || cmd.contains("طفي الموسيقى") ||
+                    cmd.contains("stop music") || cmd.contains("arrête la musique") -> {
                 stopMusic()
-                respond("تم إيقاف الموسيقى")
+                respond(musicOffPhrases.random())
             }
             cmd.contains("احسب") || containsMath(cmd) -> {
                 val result = calculate(cmd)
@@ -186,26 +234,118 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 // Expects something like: "ذكرني بعد 10 دقايق اشرب مي"
                 val minutes = extractMinutes(cmd) ?: 5
                 scheduleReminder(minutes, cmd)
-                respond("تمام، رح ذكرك بعد $minutes دقيقة")
+                respond("قبول، رح نفكرك بعد $minutes دقيقة")
             }
-            cmd.contains("افتح انستقرام") || cmd.contains("افتح انستغرام") -> {
+            cmd.contains("افتح انستقرام") || cmd.contains("افتح انستغرام") ||
+                    cmd.contains("open instagram") || cmd.contains("ouvre instagram") -> {
                 openApp("com.instagram.android", "انستقرام")
             }
-            cmd.contains("افتح يوتيوب") || cmd.contains("افتح يوتوب") -> {
+            cmd.contains("افتح يوتيوب") || cmd.contains("افتح يوتوب") ||
+                    cmd.contains("open youtube") || cmd.contains("ouvre youtube") -> {
                 openApp("com.google.android.youtube", "يوتيوب")
             }
-            cmd.contains("افتح فيسبوك") -> {
+            cmd.contains("افتح فيسبوك") ||
+                    cmd.contains("open facebook") || cmd.contains("ouvre facebook") -> {
                 openApp("com.facebook.katana", "فيسبوك")
             }
             cmd.contains("اتصل ب") -> {
                 val name = extractNameAfter(cmd, "اتصل ب")
                 callContact(name)
             }
-            cmd.contains("رسمة اليوم") || cmd.contains("اقترح لي رسمة") -> {
+            cmd.contains("call ") -> {
+                val name = extractNameAfter(cmd, "call ")
+                callContact(name)
+            }
+            cmd.contains("appelle ") -> {
+                val name = extractNameAfter(cmd, "appelle ")
+                callContact(name)
+            }
+            cmd.contains("رسمة اليوم") || cmd.contains("اقترح لي رسمة") ||
+                    cmd.contains("drawing idea") || cmd.contains("idée de dessin") -> {
                 respond(suggestDrawing())
             }
-            cmd.contains("فطور") -> {
+            cmd.contains("فطور") || cmd.contains("breakfast idea") ||
+                    cmd.contains("idée de petit") -> {
                 respond(suggestBreakfast())
+            }
+            cmd.contains("البطارية") || cmd.contains("battery") -> {
+                respond("البطارية عند ${getBatteryLevel()}%")
+            }
+            cmd.contains("التاريخ") || cmd.contains("date") -> {
+                val today = java.text.SimpleDateFormat("dd/MM/yyyy", Locale("ar")).format(Date())
+                respond("التاريخ اليوم $today")
+            }
+            cmd.contains("ارفع الصوت") || cmd.contains("زود الصوت") -> {
+                adjustVolume(true)
+                respond("رفعت الصوت")
+            }
+            cmd.contains("نزل الصوت") || cmd.contains("خفض الصوت") -> {
+                adjustVolume(false)
+                respond("نزلت الصوت")
+            }
+            cmd.contains("وضع الصامت") -> {
+                setRingerMode(AudioManager.RINGER_MODE_SILENT)
+            }
+            cmd.contains("وضع الاهتزاز") -> {
+                setRingerMode(AudioManager.RINGER_MODE_VIBRATE)
+            }
+            cmd.contains("الوضع العادي") || cmd.contains("رجع الصوت العادي") -> {
+                setRingerMode(AudioManager.RINGER_MODE_NORMAL)
+            }
+            cmd.contains("منبه الساعة") || cmd.contains("حط منبه") -> {
+                handleSetAlarm(cmd)
+            }
+            cmd.contains("ابحث عن") || cmd.contains("دور لي على") -> {
+                val query = extractSearchQuery(cmd)
+                searchGoogle(query)
+            }
+            cmd.contains("ودّيني الى") || cmd.contains("وديني الى") ||
+                    cmd.contains("خذني الى") || cmd.contains("الطريق الى") -> {
+                val place = extractNameAfter(cmd, "الى")
+                navigateTo(place)
+            }
+            cmd.contains("نكتة") || cmd.contains("joke") -> {
+                respond(jokes.random())
+            }
+            cmd.contains("دون ملاحظة") || cmd.contains("سجل ملاحظة") -> {
+                val note = extractNameAfter(cmd, "ملاحظة")
+                if (note.isNotBlank()) {
+                    saveNote(note)
+                    respond("سجلت الملاحظة")
+                } else {
+                    respond("قلي شو الملاحظة يلي بدك تسجلها")
+                }
+            }
+            cmd.contains("اقرا الملاحظات") || cmd.contains("شو ملاحظاتي") -> {
+                respond(readNotes())
+            }
+            cmd.contains("افتح واتساب") || cmd.contains("open whatsapp") -> {
+                openApp("com.whatsapp", "واتساب")
+            }
+            cmd.contains("افتح تيك توك") || cmd.contains("open tiktok") -> {
+                openApp("com.zhiliaoapp.musically", "تيك توك")
+            }
+            cmd.contains("افتح تويتر") || cmd.contains("افتح إكس") || cmd.contains("open twitter") -> {
+                openApp("com.twitter.android", "تويتر")
+            }
+            cmd.contains("افتح خرائط") || cmd.contains("open maps") -> {
+                openApp("com.google.android.apps.maps", "الخرائط")
+            }
+            cmd.contains("افتح الكاميرا") || cmd.contains("open camera") -> {
+                try {
+                    startActivity(Intent("android.media.action.IMAGE_CAPTURE"))
+                    respond("جاري فتح الكاميرا")
+                } catch (e: Exception) {
+                    respond("ما قدرت أفتح الكاميرا")
+                }
+            }
+            cmd.contains("افتح الاعدادات") || cmd.contains("open settings") -> {
+                try {
+                    startActivity(Intent(android.provider.Settings.ACTION_SETTINGS))
+                    respond("جاري فتح الإعدادات")
+                } catch (e: Exception) {
+                    respond("ما قدرت أفتح الإعدادات")
+                }
             }
             (cmd.contains("مسافة") || cmd.contains("مسافه")) &&
                     (cmd.contains("الى") || cmd.contains("إلى")) -> {
@@ -262,11 +402,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun containsMath(cmd: String): Boolean {
         return cmd.any { it.isDigit() } && (cmd.contains("+") || cmd.contains("-") ||
                 cmd.contains("*") || cmd.contains("/") || cmd.contains("زائد") ||
-                cmd.contains("ناقص") || cmd.contains("ضرب") || cmd.contains("قسمة"))
+                cmd.contains("ناقص") || cmd.contains("ضرب") || cmd.contains("قسمة") ||
+                cmd.contains("جذر") || cmd.contains("نسبة") || cmd.contains("%"))
     }
 
     private fun calculate(cmd: String): String {
         return try {
+            if (cmd.contains("نسبة") || cmd.contains("%")) {
+                val percentRegex = Regex("""(\d+(?:\.\d+)?)\s*%?[^\d]*من\s*(\d+(?:\.\d+)?)""")
+                val match = percentRegex.find(cmd)
+                if (match != null) {
+                    val percent = match.groupValues[1].toDouble()
+                    val total = match.groupValues[2].toDouble()
+                    val result = (percent / 100.0) * total
+                    return "النتيجة تطلع $result"
+                }
+            }
+
+            if (cmd.contains("جذر")) {
+                val rootRegex = Regex("""(\d+(?:\.\d+)?)""")
+                val match = rootRegex.find(cmd)
+                if (match != null) {
+                    val number = match.groupValues[1].toDouble()
+                    val result = sqrt(number)
+                    return "الجذر التربيعي يطلع $result"
+                }
+            }
+
             var expr = cmd
                 .replace("احسب", "")
                 .replace("زائد", "+")
@@ -275,7 +437,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 .replace("قسمة", "/")
                 .trim()
             val result = ExpressionBuilder(expr).build().evaluate()
-            "النتيجة هي $result"
+            "النتيجة تطلع $result"
         } catch (e: Exception) {
             "ما قدرت أفهم العملية الحسابية"
         }
@@ -321,23 +483,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun offlineRules(cmd: String): String? {
         return when {
             cmd.contains("مرحبا") || cmd.contains("هلا") || cmd.contains("السلام") ->
-                "أهلاً فيك، كيف بقدر أساعدك؟"
+                listOf("أهلا بيك، وين راك؟", "هلا، شنو نديرلك؟", "أهلين، قولّي كي نعاونك").random()
             cmd.contains("كيفك") || cmd.contains("شخبارك") ->
-                "تمام الحمد لله، وأنت؟"
+                listOf("لاباس الحمدلله، وانت كيفك؟", "مليح بزاف، وانت؟").random()
             cmd.contains("الساعة") ->
                 "الساعة هلق ${java.text.SimpleDateFormat("HH:mm").format(Date())}"
             cmd.contains("مين انت") || cmd.contains("شو اسمك") ->
-                "أنا جارفس، مساعدك الشخصي"
+                "أنا جارفس، صاحبك الشخصي، جاهز نعاونك بأي حاجة"
+            cmd.contains("شكرا") || cmd.contains("يعطيك الصحة") ->
+                listOf("العفو، هذا واجبي", "ولا يهمك، أنا هنا وقتاش تحتاجني").random()
             else -> null
         }
     }
 
     private fun askGemini(message: String) {
+        val promptWithStyle = "جاوبني بأسلوب طبيعي ودافئ وقريب من لهجة الحكي العادي، ردود قصيرة ومفهومة، من غير رسميات زايدة: $message"
         val jsonBody = JSONObject().apply {
             put("contents", JSONArray().put(
                 JSONObject().apply {
                     put("parts", JSONArray().put(
-                        JSONObject().apply { put("text", message) }
+                        JSONObject().apply { put("text", promptWithStyle) }
                     ))
                 }
             ))
@@ -383,7 +548,170 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         })
     }
 
-    // ---------------- Open apps ----------------
+    // ---------------- Language switching ----------------
+
+    private fun handleLanguageSwitch(cmd: String) {
+        when {
+            cmd.contains("عربي") || cmd.contains("arabic") || cmd.contains("arabe") -> {
+                currentLangCode = "ar"
+                tts.language = Locale("ar")
+                respond("تمام، رح أسمعك بالعربي هلق")
+            }
+            cmd.contains("فرنس") || cmd.contains("french") || cmd.contains("français") -> {
+                currentLangCode = "fr"
+                tts.language = Locale.FRENCH
+                respond("D'accord, je t'écoute en français maintenant")
+            }
+            cmd.contains("انجليز") || cmd.contains("english") || cmd.contains("anglais") -> {
+                currentLangCode = "en"
+                tts.language = Locale.ENGLISH
+                respond("Okay, I'm listening in English now")
+            }
+            else -> {
+                respond("قلي عربي، فرنسي، أو انجليزي")
+            }
+        }
+    }
+
+    // ---------------- Battery & date ----------------
+
+    private fun getBatteryLevel(): Int {
+        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        return bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    }
+
+    // ---------------- Volume & ringer mode ----------------
+
+    private fun adjustVolume(up: Boolean) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.adjustStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+            AudioManager.FLAG_SHOW_UI
+        )
+    }
+
+    private fun setRingerMode(mode: Int) {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.ringerMode = mode
+            respond("تم تغيير وضع الصوت")
+        } catch (e: SecurityException) {
+            respond("بدي إذن الوصول لإعدادات عدم الإزعاج أول من إعدادات الهاتف")
+        }
+    }
+
+    // ---------------- Alarm ----------------
+
+    private fun handleSetAlarm(cmd: String) {
+        val regex = Regex("""(\d{1,2})(?:[:و]\s*(\d{1,2}))?""")
+        val match = regex.find(cmd)
+        if (match == null) {
+            respond("قلي الوقت هيك: منبه الساعة 7")
+            return
+        }
+        val hour = match.groupValues[1].toIntOrNull() ?: return
+        val minute = match.groupValues[2].toIntOrNull() ?: 0
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_HOUR, hour)
+            putExtra(AlarmClock.EXTRA_MINUTES, minute)
+            putExtra(AlarmClock.EXTRA_MESSAGE, "منبه من جارفس")
+        }
+        try {
+            startActivity(intent)
+            respond("تمام، حطيت منبه الساعة $hour و $minute")
+        } catch (e: Exception) {
+            respond("ما لقيت تطبيق منبه على هاتفك")
+        }
+    }
+
+    // ---------------- Search & navigation ----------------
+
+    private fun extractSearchQuery(cmd: String): String {
+        val marker = if (cmd.contains("ابحث عن")) "ابحث عن" else "دور لي على"
+        return extractNameAfter(cmd, marker)
+    }
+
+    private fun searchGoogle(query: String) {
+        if (query.isBlank()) {
+            respond("قلي شو بدك أبحث عنه")
+            return
+        }
+        try {
+            val intent = Intent(Intent.ACTION_WEB_SEARCH)
+            intent.putExtra(SearchManager.QUERY, query)
+            startActivity(intent)
+            respond("بدور لك عن $query")
+        } catch (e: Exception) {
+            try {
+                val browserIntent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://www.google.com/search?q=" + Uri.encode(query))
+                )
+                startActivity(browserIntent)
+                respond("بدور لك عن $query")
+            } catch (e2: Exception) {
+                respond("ما قدرت أفتح البحث")
+            }
+        }
+    }
+
+    private fun navigateTo(place: String) {
+        if (place.isBlank()) {
+            respond("قلي وين بدك تروح")
+            return
+        }
+        try {
+            val gmmIntentUri = Uri.parse("geo:0,0?q=" + Uri.encode(place))
+            val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
+            mapIntent.setPackage("com.google.android.apps.maps")
+            startActivity(mapIntent)
+            respond("جاري فتح الطريق الى $place")
+        } catch (e: Exception) {
+            respond("ما قدرت أفتح الخرائط")
+        }
+    }
+
+    // ---------------- Jokes ----------------
+
+    private val jokes = listOf(
+        "واحد سأل صاحبو: علاش الديك يصيح الصباح؟ قاله: باش يفوقك قبل ما تفوته بالنوم.",
+        "طفل سأل باباه: بابا وين تحب تكون لما تكبر؟ قاله: هادي هي المشكلة، أنا كبرت وما زلت ما عرفتش.",
+        "واحد دخل يشتري ساعة، قاله البياع: هاي الساعة بتعيش معاك للأبد. قاله: طيب أعطيني وحدة تعيش أسبوع بس، خايف نضيعها.",
+        "علاش الكمبيوتر ما بيحس بالبرد؟ لأنه عنده Windows مسكرة زين."
+    )
+
+    // ---------------- Notes ----------------
+
+    private fun saveNote(note: String) {
+        val prefs = getSharedPreferences("jarvis_notes", Context.MODE_PRIVATE)
+        val existing = prefs.getStringSet("notes", mutableSetOf()) ?: mutableSetOf()
+        val updated = existing.toMutableSet()
+        updated.add(note)
+        prefs.edit().putStringSet("notes", updated).apply()
+    }
+
+    private fun readNotes(): String {
+        val prefs = getSharedPreferences("jarvis_notes", Context.MODE_PRIVATE)
+        val notes = prefs.getStringSet("notes", setOf()) ?: setOf()
+        if (notes.isEmpty()) return "ما عندك ملاحظات محفوظة"
+        return "ملاحظاتك: " + notes.joinToString("، ")
+    }
+
+    // ---------------- Natural response variety ----------------
+
+    private val flashOnPhrases = listOf(
+        "دايرلك الفلاش", "تمام، ولّى الفلاش شاعل", "هاك الفلاش شاعل"
+    )
+    private val flashOffPhrases = listOf(
+        "طفيت الفلاش", "تمام، الفلاش طافي هلق", "خلاص طفاه"
+    )
+    private val musicOnPhrases = listOf(
+        "هاكها الموسيقى بدات", "تمام، نديرلك موسيقى", "استمتع بالموسيقى"
+    )
+    private val musicOffPhrases = listOf(
+        "وقفت الموسيقى", "تمام، سكتها"
+    )
 
     private fun openApp(packageName: String, appName: String) {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
@@ -647,12 +975,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun log(text: String) {
-        logText.append("\n$text")
+        logText.append("\n\n$text")
     }
 
     override fun onDestroy() {
         super.onDestroy()
         tts.shutdown()
         stopMusic()
+        speechRecognizer?.destroy()
     }
 }
